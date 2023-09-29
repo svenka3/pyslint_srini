@@ -30,6 +30,7 @@ def pyslint_update_rule_ids():
   lv_sv_ruleid_l.append ('CL_MISSING_ENDLABEL')
   lv_sv_ruleid_l.append ('PERF_CG_TOO_MANY_CROSS')
   lv_sv_ruleid_l.append ('FUNC_CNST_MISSING_CAST')
+  lv_sv_ruleid_l.append ('FUNC_CNST_DIST_COL_EQ')
 
 '''
 with open("cfg.toml", mode="rb") as fp:
@@ -58,11 +59,52 @@ def use_extern (lv_cu_scope):
             msg = 'method is not declared extern: '+ str(cl_item.declaration.prototype.name)
             pyslint_msg ('CL_METHOD_NOT_EXTERN', msg)
 
+def af_cnst_dist_chk (cnst_i):
+  for lv_dist_item_i in cnst_i.expr.distribution.items:
+    lv_cnst_expr_s = cnst_i.expr.__str__()
+    lv_large_range = False
+    if (lv_dist_item_i.kind.name == 'DistItem'):
+      if (lv_dist_item_i.range.kind.name == 'OpenRangeExpression'):
+        lv_large_range = False
+        lv_dist_range_left = int(lv_dist_item_i.range.left.literal.value)
+        lv_dist_range_right = int(lv_dist_item_i.range.right.literal.value)
+        if (abs(lv_dist_range_right - lv_dist_range_left) > 10):
+          lv_large_range = True
+
+
+      if (lv_dist_item_i.weight.op.kind.name == 'ColonEquals'):
+        if (lv_large_range):
+          msg  = 'Potentially incorrect constraint expression!'
+          msg += ' An expression involving dist ColonEquals if found'
+          msg += ' And the range used with ColonEquals is large'
+          msg += ' This is likely to skew the random generation'
+          msg += ' and prevent other values in the dist expression'
+          msg += ' to be generated less-frequently than the large range values'
+          msg += ' Review to check if you intended to use ColonSlash'
+          msg += ' instead of ColonEquals'
+          msg += lv_cnst_expr_s
+          pyslint_msg ('FUNC_CNST_DIST_COL_EQ', msg)
+
 def cnst_arr_method_cast (lv_cu_scope):
   if (lv_cu_scope.kind.name == 'ClassDeclaration'):
     for cl_item in (lv_cu_scope.items):
       if (cl_item.kind.name == 'ConstraintDeclaration'):
         for lv_cnst_i in (cl_item.block.items):
+          if (not hasattr(lv_cnst_i, 'expr')):
+            continue
+          # Fix for Issue 35, Unary expressions
+          # do not have left/right
+          if (lv_cnst_i.expr.kind.name == 'UnaryLogicalNotExpression'):
+            continue
+          # Fix for Issue 36, inside expressions
+          # do not have left/right
+          if (lv_cnst_i.expr.kind.name == 'InsideExpression'):
+            continue
+          # Fix for Issue 37, dist expressions
+          # do not have left/right
+          if (lv_cnst_i.expr.kind.name == 'ExpressionOrDist'):
+            af_cnst_dist_chk (lv_cnst_i)
+            continue
           if (lv_cnst_i.expr.left.kind.name == 'InvocationExpression'):
             lv_cnst_expr_s = lv_cnst_i.expr.left.__str__()
             lv_arr_red_methods = [".sum()", ".sum ()",
@@ -255,7 +297,8 @@ def pyslint_update_suffixes():
 
 def chk_name_style_prefix (lv_rule_id, lv_name, lv_exp_p):
   if (lv_name.startswith(lv_exp_p)):
-    print ('AF: Good naming: ', lv_name)
+    if (print_verbose):
+      print ('AF: Good naming: ', lv_name)
   else:
     msg = 'Improper naming of identifier: ' 
     msg += lv_name
@@ -275,6 +318,20 @@ def chk_name_style_suffix (lv_rule_id, lv_name, lv_exp_s):
     pyslint_msg (lv_rule_id, msg)
 
 
+def chk_intf_4state (lv_intf_scope):
+  for lv_intf_mem_i in lv_intf_scope.members:
+    if (lv_intf_mem_i.kind.name == 'DataDeclaration'):
+      if (lv_intf_mem_i.type.kind.name == 'BitType'):
+        lv_var_decl = lv_intf_mem_i.declarators.getFirstToken()
+        lv_name = lv_var_decl.valueText
+        msg = 'Potential DUT bug hiding construct in use: '
+        msg += ' Inside SystemVerilog interface, it is recommended'
+        msg += ' to use only 4-state signals/nets.'
+        msg += ' Found a 2-state declaration as: '
+        msg += lv_intf_mem_i.__str__()
+        lv_rule_id = 'FUNC_NO_2STATE_IN_INTF'
+        pyslint_msg (lv_rule_id, msg)
+
 
 def chk_naming (lv_cu_scope):
   if (lv_cu_scope.kind.name == 'ClassDeclaration'):
@@ -286,6 +343,7 @@ def chk_naming (lv_cu_scope):
     lv_ident_name = str(lv_cu_scope.header.name)
     lv_exp_s = sv_suffix_d['intf']
     chk_name_style_suffix ('NAME_INTF_SUFFIX', lv_ident_name, lv_exp_s)
+    chk_intf_4state (lv_cu_scope)
 
   cg_label_chk (lv_cu_scope)
 
